@@ -1,2 +1,7 @@
-username: admin
-password: admin
+creds:
+  username: admin
+  password: admin
+
+kassaservers:
+  - 192.168.1.1
+  - 192.168.1.2

@@ -16,6 +16,12 @@ import (
 
 const AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36"
 
+// YAML config
+type Config struct {
+	Creds        Creds
+	KassaServers []string
+}
+
 // Credentials
 type Creds struct {
 	Username string `yaml:"username"`
@@ -38,6 +44,13 @@ type Kassa struct {
 	Version string `json:"version,omitempty"`
 	Open    bool   `json:"open"`
 	Cashier string `json:"cashier,omitempty"`
+}
+
+// Error
+type Error struct {
+	Error   bool   `json:"error"`
+	Message string `json:"message"`
+	Code    int    `json:"code"`
 }
 
 /*
@@ -70,7 +83,7 @@ func getMaxVersion(table *html.Node) string {
 /*
    Login to UKM and get Cookie for futher requests
 */
-func (ukm *UKM) login() (err error) {
+func (ukm *UKM) login() Error {
 	formData := url.Values{}
 	formData.Add("LoginForm[username]", ukm.Creds.Username)
 	formData.Add("LoginForm[password]", ukm.Creds.Password)
@@ -82,26 +95,45 @@ func (ukm *UKM) login() (err error) {
 
 	resp, err := ukm.HTTPClient.Do(req)
 	if err != nil {
-		return err
+		return Error{
+			Error:   true,
+			Message: "Not Found",
+			Code:    http.StatusNotFound,
+		}
 	}
 	defer resp.Body.Close()
 
+	if len(resp.Cookies()) < 2 {
+		return Error{
+			Error:   true,
+			Message: "Bad credentials",
+			Code:    http.StatusUnauthorized,
+		}
+	}
+
 	ukm.Cookie = resp.Cookies()[1]
 
-	return
+	return Error{Error: false}
 }
 
 /*
    Get list of cashboxes
 */
-func (ukm *UKM) getKassaList() (string, error) {
+func (ukm *UKM) getKassaList() (string, Error) {
 	req, err := http.NewRequest("GET", "http://"+ukm.IP+"/ukm/index.php?r=pos/index&onlyGrid=1", nil)
 	req.Header.Set("User-Agent", AGENT)
 	req.AddCookie(ukm.Cookie)
 
+	error := Error{Error: false}
+
 	resp, err := ukm.HTTPClient.Do(req)
 	if err != nil {
-		return "", err
+		error = Error{
+			Error:   true,
+			Message: "Bad credentials",
+			Code:    http.StatusUnauthorized,
+		}
+		return "", error
 	}
 	defer resp.Body.Close()
 
@@ -131,10 +163,22 @@ func (ukm *UKM) getKassaList() (string, error) {
 
 	outJSON, err := json.Marshal(cashboxes)
 	if err != nil {
-		return "", err
+		error = Error{
+			Error:   true,
+			Message: "Parsing error!",
+			Code:    http.StatusInternalServerError,
+		}
+		return "", error
 	}
 
-	return string(outJSON), nil
+	return string(outJSON), error
+}
+
+func errorResponse(w http.ResponseWriter, error Error) {
+	response, _ := json.Marshal(error)
+	w.WriteHeader(error.Code)
+	w.Write([]byte(response))
+	log.Println("Error:", error.Message)
 }
 
 /*
@@ -148,21 +192,33 @@ func (ukm *UKM) KassaList(w http.ResponseWriter, req *http.Request) {
 		ukm.IP = ip
 
 		err := ukm.login()
-		if err != nil {
-			w.WriteHeader(http.StatusNotFound)
-			w.Write([]byte(err.Error()))
-			log.Println("Error:", err.Error())
+
+		if err.Error {
+			errorResponse(w, err)
 		} else {
 			kassaList, err := ukm.getKassaList()
-			if err != nil {
-				w.WriteHeader(http.StatusNotFound)
-				w.Write([]byte(err.Error()))
+			if err.Error {
+				errorResponse(w, err)
 			}
 
 			fmt.Fprintf(w, kassaList)
 		}
 	} else {
-		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte("Invalid IP address!"))
+		error := Error{
+			Error:   true,
+			Message: "Invalid IP address!",
+			Code:    http.StatusBadRequest,
+		}
+
+		errorResponse(w, error)
 	}
+}
+
+/*
+   Get Kassa Server list
+*/
+func (ukm *UKM) KassaServerList(w http.ResponseWriter, req *http.Request, kassaServers *[]string) {
+	log.Println("Get kassa server list")
+	response, _ := json.Marshal(kassaServers)
+	fmt.Fprintf(w, string(response))
 }
